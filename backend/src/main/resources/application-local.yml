@@ -1,0 +1,8 @@
+# Local development overrides. Activate with SPRING_PROFILES_ACTIVE=local.
+# Real secrets still come from the environment / .env, never from this file.
+spring:
+  jpa:
+    show-sql: false
+logging:
+  level:
+    com.ghostclean: DEBUG

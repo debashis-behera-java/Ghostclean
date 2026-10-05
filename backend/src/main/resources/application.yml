@@ -1,0 +1,218 @@
+server:
+  port: 8080
+  # Never parse forwarded headers by default (ADR-034): client IPs come
+  # from the direct connection unless TRUSTED_PROXIES names the edge.
+  forward-headers-strategy: none
+
+app:
+  name: ghostclean-api
+  version: 0.3.0-phase3
+  # Application region label (local-only, ADR-036). APP_REGION stays the
+  # logical label so local/dev/test output is unchanged.
+  region: ${APP_REGION:eu}
+  base-url: ${APP_BASE_URL:http://localhost:8080}
+  # Production edge trust boundary (ADR-034). Empty = trust nothing beyond
+  # the direct connection (current behavior). Production sets the managed
+  # edge addresses/CIDRs; only those may supply forwarded client info.
+  trusted-proxies: ${TRUSTED_PROXIES:}
+
+# GhostClean administrator access. There is no role column or admin UI for
+# provisioning: admins are the verified owners of these addresses
+# (comma-separated, environment only, never hard-coded). Empty = no admins.
+admin:
+  emails: ${ADMIN_EMAILS:}
+  notification-email: ${ADMIN_NOTIFICATION_EMAIL:}
+
+spring:
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/ghostclean}
+    username: ${DATABASE_USERNAME:ghostclean}
+    password: ${DATABASE_PASSWORD:changeme-local-only}
+    hikari:
+      maximum-pool-size: 10
+  # Phase 11 distributed rate limiting (ADR-019 amendment). Defaults point
+  # at local Compose; the limiter only dials Redis when
+  # auth.rate-limiter.backend=redis (fail-closed when unreachable).
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  jackson:
+    time-zone: UTC
+  mvc:
+    throw-exception-if-no-handler-found: true
+  web:
+    resources:
+      add-mappings: false
+
+# Token encryption (ADR-036, local-only).
+# provider=env (default): EnvAesGcmTokenCrypto (AES-256-GCM) from
+# TOKEN_ENCRYPTION_KEY. Fails fast when the key is missing or weak.
+crypto:
+  provider: ${TOKEN_CRYPTO_PROVIDER:env}
+  token-encryption-key: ${TOKEN_ENCRYPTION_KEY:}
+
+# Phase 3 Google OAuth. Secrets come ONLY from the environment and stay
+# server-side. Phase 4 activates the mailbox scope below: Gmail read-only,
+# a restricted scope — Google verification/security assessment is required
+# before public production use (see docs/GOOGLE_OAUTH_SETUP.md). Existing
+# identity-only connections must reconnect to grant it. No message-send
+# scope exists in this surface.
+oauth:
+  google:
+    enabled: true
+    client-id: ${GOOGLE_CLIENT_ID:}
+    client-secret: ${GOOGLE_CLIENT_SECRET:}
+    redirect-uri: ${GOOGLE_REDIRECT_URI:}
+    identity-scopes: openid email profile
+    mailbox-scope: ${GOOGLE_MAILBOX_SCOPE:https://www.googleapis.com/auth/gmail.readonly}
+    state-ttl: 10m
+  # Phase 10 Microsoft (Entra ID) OAuth. Secrets come ONLY from the
+  # environment and stay server-side. Delegated READ-only scopes only:
+  # identity plus Mail.Read. No message-send scope exists in this surface.
+  # Publisher verification has NOT been completed (see
+  # docs/MICROSOFT_OAUTH_SETUP.md); testing tenants only until verified.
+  microsoft:
+    enabled: true
+    client-id: ${MICROSOFT_CLIENT_ID:}
+    client-secret: ${MICROSOFT_CLIENT_SECRET:}
+    redirect-uri: ${MICROSOFT_REDIRECT_URI:}
+    authority: ${MICROSOFT_AUTHORITY:https://login.microsoftonline.com}
+    tenant: ${MICROSOFT_TENANT:common}
+    graph-base-url: ${MICROSOFT_GRAPH_BASE_URL:https://graph.microsoft.com}
+    identity-scopes: openid profile offline_access User.Read
+    mailbox-scope: ${MICROSOFT_MAILBOX_SCOPE:https://graph.microsoft.com/Mail.Read}
+    state-ttl: 10m
+
+# Phase 10 bounded synchronous Graph scanning. Conservative defaults mirror
+# the Gmail budgets: at most 500 messages (10 pages x 50) or 120 seconds per
+# scan; targeted provider-side $filter with a 12-month lookback; bounded
+# retries with backoff.
+graph:
+  base-url: ${MICROSOFT_GRAPH_BASE_URL:https://graph.microsoft.com}
+  page-size: 50
+  max-pages: 10
+  max-messages-per-scan: ${GRAPH_MAX_MESSAGES_PER_SCAN:500}
+  max-duration-seconds: 120
+  max-api-calls: 1200
+  lookback-months: ${GRAPH_LOOKBACK_MONTHS:12}
+  max-attempts: 4
+  backoff-base-millis: 1000
+  max-backoff-millis: 15000
+  persist-threshold: 10
+
+# Phase 4 bounded synchronous scanning. Conservative defaults: at most 500
+# messages (5 pages x 100) or 120 seconds per scan; targeted provider-side
+# query with a 12-month lookback; bounded retries with backoff.
+gmail:
+  page-size: 100
+  max-pages: 5
+  max-messages-per-scan: ${GMAIL_MAX_MESSAGES_PER_SCAN:500}
+  max-duration-seconds: 120
+  max-api-calls: 1200
+  lookback-months: ${GMAIL_LOOKBACK_MONTHS:12}
+  max-attempts: 4
+  backoff-base-millis: 1000
+  max-backoff-millis: 15000
+  persist-threshold: 10
+
+# Phase 13 additive ML scorer (ADR-037). Disabled by default: the rule engine
+# is the source of truth and no Bedrock call is made unless explicitly
+# enabled. The API key comes ONLY from the BEDROCK_API_KEY environment
+# variable and is never logged, audited, or returned.
+detection:
+  ml:
+    enabled: ${DETECTION_ML_ENABLED:false}
+    base-url: ${BEDROCK_BASE_URL:https://bedrock-mantle.us-east-1.api.aws/v1}
+    model: ${BEDROCK_MODEL:qwen.qwen3-coder-480b-a35b-instruct}
+    api-key: ${BEDROCK_API_KEY:}
+    timeout-ms: ${BEDROCK_TIMEOUT_MS:8000}
+
+# Phase 2 authentication. JWT_SIGNING_KEY (min 32 chars) has no default and
+# fails fast when missing. Durations accept "15m"/"30d" style values.
+auth:
+  jwt-secret: ${JWT_SIGNING_KEY:}
+  issuer: ghostclean
+  access-token-ttl: ${AUTH_ACCESS_TOKEN_TTL:15m}
+  refresh-token-ttl: ${AUTH_REFRESH_TOKEN_TTL:30d}
+  verification-token-ttl: ${AUTH_VERIFICATION_TOKEN_TTL:24h}
+  reset-token-ttl: ${AUTH_RESET_TOKEN_TTL:30m}
+  password-min-length: 12
+  password-max-length: 128
+  cookie-name: gc_refresh
+  cookie-secure: ${AUTH_COOKIE_SECURE:true}
+  mail-mode: ${VERIFICATION_MAIL_MODE:silent}  # Phase 11 backend selection: memory (default, single-instance) or redis
+  # (distributed, fail-closed when Redis is unavailable).
+  rate-limiter:
+    backend: ${RATE_LIMITER_BACKEND:memory}
+  rate-limits:
+    login-per-minute-per-ip: 5
+    register-per-minute-per-ip: 5
+    verify-per-minute-per-ip: 10
+    resend-per-minute-per-ip: 10
+    resend-per-day-per-email: 5
+    refresh-per-minute-per-ip: 30
+    forgot-per-minute-per-ip: 10
+    forgot-per-day-per-email: 5
+    reset-per-minute-per-ip: 10
+    max-failed-logins: 5
+    lockout: 15m
+
+# Transactional verification mail (ADR-038). Provider-agnostic seam:
+# VerificationEmailSender. Empty provider (default) preserves the Phase 2
+# silent/log behavior with zero network calls. Production sets
+# EMAIL_PROVIDER=resend plus sender identity and API key from the
+# environment only — never committed, never logged, never returned.
+# Gmail SMTP alternative: EMAIL_PROVIDER=gmail with EMAIL_FROM as the Gmail
+# address and EMAIL_SMTP_USERNAME/EMAIL_SMTP_PASSWORD (App Password) from
+# the environment only — never committed, never logged, never returned.
+verification:
+  mail:
+    provider: ${EMAIL_PROVIDER:}
+    from: ${EMAIL_FROM:}
+    from-name: ${EMAIL_FROM_NAME:GhostClean}
+    api-key: ${EMAIL_API_KEY:}
+    base-url: ${EMAIL_API_BASE_URL:https://api.resend.com}
+    timeout-ms: ${EMAIL_TIMEOUT_MS:8000}
+    smtp-host: ${EMAIL_SMTP_HOST:smtp.gmail.com}
+    smtp-port: ${EMAIL_SMTP_PORT:587}
+    smtp-username: ${EMAIL_SMTP_USERNAME:}
+    smtp-password: ${EMAIL_SMTP_PASSWORD:}
+    smtp-username-fallback: ${EMAIL_USERNAME:}
+    smtp-password-fallback: ${EMAIL_PASSWORD:}
+
+# Phase 7 controlled outbound dispatch. The default provider is the
+# in-memory sink (records instead of sending), so a stock checkout can
+# never send real email. Gmail is NOT used here and stays read-only.
+# Real-provider credentials (if a provider is ever added) come ONLY from
+# the environment and are never logged, audited, or returned.
+outbound:
+  mail:
+    provider: ${OUTBOUND_MAIL_PROVIDER:sink}
+    from: ${OUTBOUND_MAIL_FROM:privacy-requests@example.invalid}
+    api-key: ${OUTBOUND_MAIL_API_KEY:}
+    max-attempts: ${OUTBOUND_MAIL_MAX_ATTEMPTS:3}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  level:
+    com.ghostclean: INFO
+  pattern:
+    console: "%d{ISO8601,UTC} %-5level [%X{requestId}] %logger{36} - %msg%n"

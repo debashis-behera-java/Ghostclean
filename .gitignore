@@ -1,0 +1,54 @@
+# --- Secrets (never commit) ---
+.env
+.env.*
+!.env.example
+
+# --- Java / Maven ---
+target/
+*.class
+*.jar
+*.war
+!.mvn/wrapper/*.jar
+
+# --- Node / frontend build ---
+node_modules/
+frontend/dist/
+frontend/build/
+dist/
+build/
+frontend/.env
+frontend/.env.local
+
+# --- Python cache / test artifacts ---
+__pycache__/
+*.pyc
+*.pyo
+.coverage
+htmlcov/
+.coverage.*
+coverage/
+.pytest_cache/
+.mypy_cache/
+
+# --- IDE ---
+.idea/
+.vscode/
+*.iml
+*.code-workspace
+.DS_Store
+Thumbs.db
+
+# --- Logs / local data ---
+*.log
+*.err
+logs/
+*.dump
+*.tmp
+*.bak
+*~
+*.swp
+pgdata/
+redisdata/
+
+# --- OS ---
+Desktop.ini

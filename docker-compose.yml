@@ -1,0 +1,140 @@
+# GhostClean local development (Phase 1).
+#
+# Default profile: postgres + redis + api.
+# Nginx ("edge" profile) is optional: docker compose --profile edge up
+# No secrets live in this file; everything sensitive comes from the
+# environment / .env (never committed).
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME:-ghostclean}
+      POSTGRES_USER: ${DATABASE_USERNAME:-ghostclean}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-changeme-local-only}
+    ports:
+      - "${DATABASE_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USERNAME:-ghostclean}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: jdbc:postgresql://db:5432/${DATABASE_NAME:-ghostclean}
+      DATABASE_USERNAME: ${DATABASE_USERNAME:-ghostclean}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-changeme-local-only}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
+      APP_REGION: ${APP_REGION:-eu}
+      # Production-safe base URL (no code changes per environment).
+      # Local: http://localhost:8082 (host port). Production:
+      # https://api.ghostclean.com. Used for SPA return-URL validation,
+      # default callback target, and verification links. Default preserves
+      # current local behavior when unset.
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
+      # GhostClean admin approval (Google connection requests). Verified
+      # owners of these comma-separated addresses may review the queue;
+      # everyone else receives 403. Notification address defaults to the
+      # first allowlist entry when unset. Values live in .env (never commit).
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      ADMIN_NOTIFICATION_EMAIL: ${ADMIN_NOTIFICATION_EMAIL:-}
+      # REQUIRED: 32 random bytes, Base64. Generate with:
+      #   python3 -c "import secrets,base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:?TOKEN_ENCRYPTION_KEY must be set in .env}
+      # REQUIRED (Phase 2): access-token signing secret, min 32 chars.
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:?JWT_SIGNING_KEY must be set in .env}
+      # Local http dev needs Secure cookies off; production keeps true.
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      # Local dev may use log to see verification links; NEVER in production.
+      VERIFICATION_MAIL_MODE: ${VERIFICATION_MAIL_MODE:-silent}
+      # Transactional verification mail (ADR-038). Empty provider (default)
+      # keeps Phase 2 silent/log behavior with zero network calls. Production
+      # sets EMAIL_PROVIDER=resend with sender identity + API key in .env
+      # (never committed). See docs/TRANSACTIONAL_EMAIL_SETUP.md.
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-GhostClean}
+      EMAIL_API_KEY: ${EMAIL_API_KEY:-}
+      EMAIL_API_BASE_URL: ${EMAIL_API_BASE_URL:-https://api.resend.com}
+      EMAIL_TIMEOUT_MS: ${EMAIL_TIMEOUT_MS:-8000}
+      # Gmail SMTP alternative (provider=gmail): authenticated SMTP via the
+      # account holder's own Gmail address + App Password from .env
+      # (never committed). Resend keys and SMTP passwords never appear here.
+      EMAIL_SMTP_HOST: ${EMAIL_SMTP_HOST:-smtp.gmail.com}
+      EMAIL_SMTP_PORT: ${EMAIL_SMTP_PORT:-587}
+      # Both naming variants are passed through; application.yml prefers
+      # EMAIL_SMTP_* and falls back to EMAIL_USERNAME/EMAIL_PASSWORD.
+      EMAIL_SMTP_USERNAME: ${EMAIL_SMTP_USERNAME:-}
+      EMAIL_SMTP_PASSWORD: ${EMAIL_SMTP_PASSWORD:-}
+      EMAIL_USERNAME: ${EMAIL_USERNAME:-}
+      EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
+      # Phase 11 distributed rate limiting (default memory = today's behavior).
+      # Set RATE_LIMITER_BACKEND=redis for multi-instance; the API then dials
+      # the Compose redis service and fails closed when it is unreachable.
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: 6379
+      RATE_LIMITER_BACKEND: ${RATE_LIMITER_BACKEND:-memory}
+      DETECTION_ML_ENABLED: ${DETECTION_ML_ENABLED:-false}
+      BEDROCK_BASE_URL: ${BEDROCK_BASE_URL:-https://bedrock-mantle.us-east-1.api.aws/v1}
+      BEDROCK_MODEL: ${BEDROCK_MODEL:-qwen.qwen3-coder-480b-a35b-instruct}
+      BEDROCK_API_KEY: ${BEDROCK_API_KEY:-}
+      BEDROCK_TIMEOUT_MS: ${BEDROCK_TIMEOUT_MS:-8000}
+      # Phase 3/4 Google OAuth (identity + mailbox read). Empty defaults =
+      # unconfigured; the API answers authorize with a safe provider error
+      # until real values are supplied via .env (never committed).
+      # Local redirect uses the host port (8082 -> container 8080):
+      # http://localhost:8082/api/v1/oauth/google/callback
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      GOOGLE_MAILBOX_SCOPE: ${GOOGLE_MAILBOX_SCOPE:-https://www.googleapis.com/auth/gmail.readonly}
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/v1/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Optional edge proxy (Phase 0 architecture foresees Nginx in front).
+  nginx:
+    image: nginx:1.27-alpine
+    profiles: ["edge"]
+    depends_on:
+      - api
+    ports:
+      - "${NGINX_PORT:-8081}:80"
+    volumes:
+      - ./infrastructure/nginx.conf:/etc/nginx/nginx.conf:ro
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

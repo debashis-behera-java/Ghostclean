@@ -1,0 +1,18 @@
+# Gitleaks configuration (secret scanning). Run: gitleaks detect --source . -v
+# Test fixtures use obviously synthetic values; allowlist them here so the
+# scanner stays green without weakening real-secret detection.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "GhostClean synthetic test/placeholder values"
+regexes = [
+  '''12345678901234567890123456789012''',
+  '''REPLACE_ME''',
+  '''changeme-local-only''',
+  '''phase1-probe-123''',
+  '''phase1-test-only-password''',
+  '''future-oauth-refresh-value''',
+  '''oauth-plaintext-marker-xyz''',
+  '''späcïal ünïcode''',
+]

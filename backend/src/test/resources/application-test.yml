@@ -1,0 +1,13 @@
+# Test-profile defaults. Testcontainers provides the datasource dynamically;
+# this file only keeps test logging quiet. The token-encryption key is
+# supplied per-test (obviously synthetic, non-production value).
+logging:
+  level:
+    com.ghostclean: WARN
+    org.hibernate.engine.jdbc.env.internal: ERROR
+management:
+  health:
+    # No Redis runs in tests by design (the limiter defaults to memory);
+    # without this, the auto-configured Redis indicator reports DOWN.
+    redis:
+      enabled: false
