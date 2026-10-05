@@ -1,172 +1,512 @@
 # GhostClean
 
-> "Find what the internet remembers. Decide what it should forget."
+> Automated Digital Footprint Discovery & Account Deletion Assistant
 
-GhostClean is a privacy engineering platform that helps users discover online
-services plausibly linked to their email address (via explicitly authorized
-OAuth mailbox-metadata access), review them, draft cautious deletion requests,
-and track those requests. It is **not** a law firm or legal service, never
-sends anything automatically, and never claims an account is "active" from
-email evidence alone.
+GhostClean is a privacy-focused SaaS platform designed to help users discover abandoned online accounts associated with their email inbox and manage account/data deletion requests from a single interface.
 
-**Current state: Phases 1–11 implemented; local-only architecture established by ADR-036 (no AWS).**
-Gmail/Graph metadata scanning, detection, service intelligence, privacy-request lifecycle, controlled dispatch, tracking, Microsoft connector, and hardening (RLS, fail-closed Redis option, lazy rotation, CSP) are implemented and covered by the current 444-test suite (444 tests, 0 failures, 0 errors, 0 skipped, BUILD SUCCESS). There is no AWS runtime or build dependency, no KMS implementation, and no AWS deployment path: PostgreSQL 16 and Redis 7 run locally via Docker Compose, token encryption is local AES-256-GCM (`EnvAesGcmTokenCrypto`), backups use `pg_dump`/`pg_restore`, and monitoring is Spring Boot Actuator + application logs. Privacy approval pending, production mail remains `silent`, Phase 13 not started.
+## Overview
 
-## Architecture summary
+GhostClean provides a controlled workflow:
 
-- **Modular monolith** (single Spring Boot deployable, ADR-001): packages
-  `auth, user, oauth, mailbox, scanner, detection, services, account, risk,
-  deletion, legal, workflow, notification, audit, common` (+ `health`).
-- **Metadata-first** (ADR-002): mailbox bodies are never stored.
-- **Two-gate manual drafts** (ADR-003/ADR-014): V1 has no send capability.
-- **READ-only OAuth in V1, degraded manual mode on denial** (ADR-006/ADR-013).
-- **Local AES-256-GCM token encryption** (ADR-036): `TokenCryptoProvider` abstraction backed by `EnvAesGcmTokenCrypto`; the historical AWS-KMS path was retired, so there is no cloud key dependency.
-- Full decisions: [`ARCHITECTURE_DECISIONS.md`](ARCHITECTURE_DECISIONS.md);
-  specs: [`docs/`](docs/).
-
-## Technology stack
-
-Backend: Java 21, Spring Boot 3.3, Spring Security, Spring Data JPA /
-Hibernate, PostgreSQL 16, Flyway, Redis 7, JUnit 5, Mockito,
-Testcontainers, ArchUnit. Infra: Docker, Docker Compose, Nginx (optional).
-Frontend (Phase 7): React, TypeScript, Vite, Tailwind.
-
-## Repository structure
-
+```text
+Connect Mailbox
+      ↓
+OAuth Approval
+      ↓
+Mailbox Scan
+      ↓
+Account Discovery
+      ↓
+Review Discovered Accounts
+      ↓
+Create Deletion Request
+      ↓
+User Approval
+      ↓
+Deletion Request Dispatch
+      ↓
+Track Request Status
 ```
-backend/            Spring Boot modular monolith (pom.xml, src/…)
-  src/main/java/com/ghostclean/   auth user oauth mailbox scanner detection
-                                  services account risk deletion legal
-                                  workflow notification audit common health
-  src/main/resources/             application*.yml, db/migration/V1__…
-  src/test/                       444 tests, 0 failures, 0 errors, 0 skipped (Phases 1–11 + local-only architecture; per-phase counts in docs are historical)
-frontend/           Phase 1 placeholder (React arrives Phase 7)
-infrastructure/     nginx.conf (optional "edge" profile)
-docs/               Phase 0 architecture (authoritative, do not overwrite)
-ARCHITECTURE_DECISIONS.md         ADRs (authoritative)
-docker-compose.yml  db + redis + api (+ optional nginx)
-.env.example        placeholders only — never real secrets
+
+**Privacy principle:** discovering an account does not automatically mean deleting it. The user remains in control.
+
+## Features
+
+### Authentication
+- User registration and login
+- JWT-based authentication
+- Email verification
+- Protected REST APIs
+- Role-aware access control
+
+### Email Verification
+- Gmail SMTP transactional email
+- Dynamic recipients
+- Verification links
+- STARTTLS
+- Fail-fast configuration validation
+- Environment-based credentials
+
+### Google OAuth
+- Google OAuth 2.0
+- OAuth state validation
+- Callback validation
+- Encrypted token storage
+- Connection status tracking
+- Read-only mailbox access
+- Admin approval workflow
+
+### Google Connection Approval
+
+```text
+User
+ ↓
+Requests Google Connection
+ ↓
+Admin receives request
+ ↓
+Admin approves / rejects
+ ↓
+User sees approval status
+ ↓
+Google OAuth authorization
+ ↓
+Mailbox becomes connected
+```
+
+### Mailbox Discovery
+
+After connecting a mailbox, GhostClean scans using the required read-only capability and identifies services/accounts associated with the user's email identity.
+
+### Deletion Requests
+
+GhostClean separates discovery from deletion:
+
+```text
+Discovered Account
+        ↓
+Review
+        ↓
+Create Deletion Request
+        ↓
+Draft
+        ↓
+User Approval
+        ↓
+Dispatch
+        ↓
+Track Status
+```
+
+This prevents accidental deletion of accounts the user wants to keep.
+
+## Privacy & Security
+
+- Read-only mailbox access for discovery
+- Explicit user approval for sensitive actions
+- OAuth state protection
+- Encrypted OAuth tokens
+- Environment-based secrets
+- Fail-closed security behavior
+- No hard-coded credentials
+- Admin authorization for administrative operations
+
+Example environment variables:
+
+```env
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+JWT_SIGNING_KEY=
+TOKEN_ENCRYPTION_KEY=
+EMAIL_SMTP_USERNAME=
+EMAIL_SMTP_PASSWORD=
+```
+
+**Never commit real credentials to GitHub.**
+
+## Architecture
+
+```text
+                    ┌─────────────────────┐
+                    │      Browser        │
+                    │   React Frontend    │
+                    └──────────┬──────────┘
+                               │ REST / JWT
+                               ▼
+                    ┌─────────────────────┐
+                    │   Spring Boot API   │
+                    │ Authentication      │
+                    │ OAuth               │
+                    │ Discovery           │
+                    │ Scan Management     │
+                    │ Deletion Requests   │
+                    │ Admin Approval      │
+                    └───────┬─────┬───────┘
+                            │     │
+                  ┌─────────┘     └──────────┐
+                  ▼                          ▼
+          ┌───────────────┐          ┌───────────────┐
+          │  PostgreSQL   │          │     Redis     │
+          │ Users         │          │ State/Cache   │
+          │ OAuth         │          └───────────────┘
+          │ Discovery     │
+          │ Requests      │
+          └───────┬───────┘
+                  │
+                  ▼
+          ┌─────────────────┐
+          │ Google OAuth /  │
+          │ Gmail Read API  │
+          └─────────────────┘
+```
+
+## Technology Stack
+
+### Backend
+- Java 21
+- Spring Boot
+- Spring Security
+- Spring Data JPA
+- Hibernate
+- PostgreSQL
+- Flyway
+- JWT
+- OAuth 2.0
+- JavaMail / SMTP
+- REST APIs
+- Maven
+
+### Frontend
+- React
+- TypeScript
+- Vite
+- React Router
+- React Query
+- Axios
+- Tailwind CSS
+
+### Infrastructure
+- Docker
+- Docker Compose
+- PostgreSQL
+- Redis
+- Nginx
+
+### Testing
+- JUnit
+- Spring Boot Test
+- Mockito
+- Frontend component tests
+- Integration tests
+- Security tests
+
+## Project Structure
+
+```text
+GhostClean/
+├── backend/
+│   ├── src/
+│   └── Dockerfile
+├── frontend/
+│   ├── src/
+│   ├── package.json
+│   └── vite.config.ts
+├── docs/
+├── infrastructure/
+├── docker-compose.yml
+├── .env.example
+├── .gitignore
+├── .gitleaks.toml
+├── ARCHITECTURE_DECISIONS.md
+└── README.md
 ```
 
 ## Prerequisites
 
-- Java 21, Maven 3.9+, Docker + Docker Compose v2, Python 3 (key generation)
-- Ports free: 8080 (api), 5432 (postgres), 6379 (redis)
+- Java 21+
+- Maven 3.9+
+- Node.js 20+
+- npm
+- Docker Desktop
+- Git
 
-## Local setup
+Verify:
 
-```powershell
-copy .env.example .env
-# Generate the REQUIRED local encryption key (32 random bytes, Base64):
-python3 -c "import secrets,base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"
-# Paste the output as TOKEN_ENCRYPTION_KEY in .env
-
-docker compose up --build -d
-curl http://localhost:8080/api/v1/health
-# {"status":"UP","service":"ghostclean-api","version":"0.2.0-phase2","region":"eu"}
+```bash
+java -version
+mvn -version
+node -v
+npm -v
+docker --version
+docker compose version
 ```
 
-With the edge proxy: `docker compose --profile edge up --build -d`
-(API then also reachable via `http://localhost:8081`).
+## Environment Configuration
 
-## Authentication setup
+Create a local `.env` from `.env.example`.
 
-Required in `.env` (besides Phase 1 keys): `JWT_SIGNING_KEY` (min 32 chars;
-Compose fails fast without it). Local http dev: `AUTH_COOKIE_SECURE=false`.
-Local verification links: `VERIFICATION_MAIL_MODE=log` (dev only — never in
-production; default `silent` delivers nothing).
-
-Local registration flow:
+PowerShell:
 
 ```powershell
-# 1. register (always 201, even for duplicates — no oracle)
-curl -X POST http://localhost:8080/api/v1/auth/register `
-  -H 'Content-Type: application/json' `
-  -d '{"email":"you@example.com","password":"a-strong-password-here"}'
-# 2. read the dev verification link from app logs
-docker logs ghostclean-api-1 | Select-String "Verification link"
-# 3. verify (204), then login (200 + httpOnly refresh cookie)
-curl -X POST http://localhost:8080/api/v1/auth/login `
-  -H 'Content-Type: application/json' `
-  -d '{"email":"you@example.com","password":"a-strong-password-here"}'
-# 4. call with the access token; refresh via cookie; logout revokes it
+Copy-Item .env.example .env
 ```
 
-Login works while unverified but returns `emailVerified:false`; sensitive
-features gate on verification later. Five failed logins lock an account for
-15 minutes (423). Full flow: [`docs/PHASE_02.md`](docs/PHASE_02.md).
+Configure your local values in `.env`.
 
-## Environment variables
+Example:
 
-See [`.env.example`](.env.example). Categories: `DATABASE_*`, `REDIS_*`,
-`APP_*` (`APP_REGION=eu`), `TOKEN_ENCRYPTION_KEY` (required, fail-fast),
-`JWT_SIGNING_KEY` (required since Phase 2, fail-fast), `AUTH_COOKIE_SECURE`,
-`VERIFICATION_MAIL_MODE`, optional `AUTH_*` TTL/rate-limit overrides,
-commented `OAUTH_*` placeholders (Phase 3+ — never production credentials).
+```env
+APP_BASE_URL=http://localhost:5173
 
-## Database migration
+DATABASE_URL=jdbc:postgresql://db:5432/ghostclean
+DATABASE_USERNAME=ghostclean
+DATABASE_PASSWORD=your-local-password
 
-Flyway runs automatically on startup from
-`backend/src/main/resources/db/migration/`. V1 created the foundation
-(`users`, `email_verification_tokens`, `user_settings`, `refresh_sessions`,
-`audit_logs`); V2 added lockout/last-login columns; V3 dropped the
-`audit_logs→users` FK so audit commits independently (see
-[`docs/PHASE_02.md`](docs/PHASE_02.md)). Business tables arrive in their own
-phases.
+JWT_SIGNING_KEY=your-development-key
+TOKEN_ENCRYPTION_KEY=your-development-encryption-key
 
-## Test commands
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
 
-```powershell
+EMAIL_PROVIDER=gmail
+EMAIL_SMTP_HOST=smtp.gmail.com
+EMAIL_SMTP_PORT=587
+EMAIL_SMTP_USERNAME=your-email@gmail.com
+EMAIL_SMTP_PASSWORD=your-app-password
+
+ADMIN_EMAILS=your-admin-email@gmail.com
+```
+
+**Never commit `.env`. Only `.env.example` should be committed.**
+
+## Run With Docker
+
+```bash
+docker compose up -d --build
+docker compose ps
+docker compose logs -f api
+```
+
+Health check:
+
+```bash
+curl http://localhost:8082/api/v1/health
+```
+
+Stop:
+
+```bash
+docker compose down
+```
+
+## Run Backend Locally
+
+```bash
 cd backend
-mvn -q test
+mvn test
+mvn spring-boot:run
 ```
 
-Integration tests use Testcontainers (Docker required) with an obviously
-synthetic in-code key. Secret hygiene: `.gitleaks.toml` +
-`gitleaks detect --source . -v` (if gitleaks is installed).
+## Run Frontend Locally
 
-## Health endpoint
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-`GET /api/v1/health` → `200 {"status":"UP","service":"ghostclean-api",…}`.
-Returns static facts only — no secrets, tokens, or connection details.
-`GET /api/v1/users/me` requires a Bearer access token and returns the
-caller's own profile (no `{id}` route exists by design).
+Frontend:
 
-## Security notes
+```text
+http://localhost:5173
+```
 
-- Passwords: BCrypt hashes only. Refresh/verification artifacts: hashes only.
-- Access: 15m JWT (minimal claims, env secret, fail-fast); refresh sessions
-  rotate, reuse revokes the chain, logout revokes. Lockout after 5 fails.
-- OAuth tokens (future): AES-256-GCM via env key, per-row IV, `key_version`
-  column; app refuses to boot without a ≥256-bit key; keys never logged.
-- API: stateless, CSRF-disabled-by-design for token auth, unauthenticated →
-  401. Correlation id on every response (`X-Request-Id`).
-- Logs carry the request id and never secrets (see `RequestIdFilter`).
-- V1 provably contains **no** mail-send capability (`NoSendCapabilityTests`).
+## Testing
 
-## Phase 2 scope
+Backend:
 
-Authentication: oracle-free registration, required email verification
-(hash-stored, expiring, single-use tokens; silent/log mail seam, no
-provider), JWT access + rotating refresh sessions, logout, per-IP budgets +
-persisted lockout, principal-only `/users/me`, audit trail with secret
-denylist, V2/V3 migrations, 77 green tests. See
-[`docs/PHASE_02.md`](docs/PHASE_02.md).
+```bash
+cd backend
+mvn test
+```
 
-## Phase 3 scope
+Frontend:
 
-Google OAuth identity-only connections: authorize URL (identity scopes,
-state + PKCE), unauthenticated callback with state-bound ownership,
-encrypted connection storage, safe status list, disconnect with
-best-effort revocation + wipe, forced refresh, V4 migration, scripted-
-provider tests (no live Google), 104 green tests. See
-[`docs/PHASE_03.md`](docs/PHASE_03.md) and
-[`docs/GOOGLE_OAUTH_SETUP.md`](docs/GOOGLE_OAUTH_SETUP.md).
+```bash
+cd frontend
+npm test
+npm run build
+```
 
-## Implementation status
+Coverage includes authentication, JWT security, OAuth, Google approval, email verification, token encryption, scanning, discovery, deletion requests, admin authorization, and security boundaries.
 
-Implemented (Phases 1–11 + ADR-036 local-only): Google OAuth + Gmail read-only scanning + detection, service intelligence/directory, privacy-request draft/approve/dispatch/tracking, Microsoft/Graph connector (delegated `Mail.Read`), RLS/CSP/rate-limit hardening, lazy re-encrypt-on-read, `silent`/`log` verification seam + `sink` dispatch provider only — all on local Docker Compose (PostgreSQL 16, Redis 7, Nginx edge profile) with local AES-256-GCM encryption, `pg_dump`/`pg_restore` backup scripts, Actuator + log monitoring, and ten local runbooks. Full local suite 444/0/0/0 BUILD SUCCESS (local Testcontainers only).
-Still absent: privacy-content human approval (pending — no approval evidence in-repo), production verification-mail provider (DEFERRED per ADR-035, production `silent`), real OAuth credentials, publisher verification (Google/Microsoft), React business UI. AWS deployment is explicitly NOT SUPPORTED (no RDS/KMS/ACM/CloudWatch/Secrets Manager wiring, retired by ADR-036); no AWS production environment has been verified. Next: privacy approval + mail-provider ADR when human review requires them; Phase 13 explicitly NOT STARTED.
-Historical per-phase test counts below are phase-completion records; current suite is 444 tests, 0 failures, 0 errors, 0 skipped (BUILD SUCCESS).
-#   P r i v a c y M a s k  
- 
+## Security Rules
+
+Never commit:
+
+```text
+.env
+OAuth client secrets
+JWT signing keys
+Encryption keys
+API keys
+SMTP passwords
+Database passwords
+Access tokens
+Refresh tokens
+Private keys
+```
+
+Check before pushing:
+
+```bash
+git status
+```
+
+Optional secret scan:
+
+```bash
+gitleaks detect --source . -v
+```
+
+## Application Workflow
+
+### Register
+
+```text
+Register → Verification Email → Verify Email → Login
+```
+
+### Connect Google
+
+```text
+Connect Google → Connection Request → Admin Approval
+→ Google OAuth → Connected
+```
+
+### Scan
+
+```text
+Connected Mailbox → Start Scan → Read-only Mailbox Analysis
+→ Discovered Accounts
+```
+
+### Request Deletion
+
+```text
+Discovered Account → Review → Create Request
+→ User Approval → Deletion Workflow
+```
+
+## Design Principles
+
+- **User Control:** users decide what should be deleted.
+- **Least Privilege:** integrations receive only required permissions.
+- **Explicit Approval:** sensitive operations require explicit approval.
+- **No Secret Hardcoding:** secrets come from environment configuration.
+- **Auditability:** important actions are represented through application events and request states.
+- **Fail Closed:** missing authorization or required permissions result in rejection rather than silent execution.
+
+## Project Status
+
+| Component | Status |
+|---|---|
+| Authentication | ✅ |
+| JWT Security | ✅ |
+| Email Verification | ✅ |
+| Gmail SMTP | ✅ |
+| Google OAuth | ✅ |
+| Google Connection Approval | ✅ |
+| OAuth Token Encryption | ✅ |
+| Mailbox Discovery | ✅ |
+| Scan Workflow | ✅ |
+| Deletion Request Workflow | ✅ |
+| Admin Controls | ✅ |
+| PostgreSQL | ✅ |
+| Redis | ✅ |
+| Docker Compose | ✅ |
+| Frontend | ✅ |
+| Backend Tests | ✅ |
+| Frontend Tests | ✅ |
+
+## Current Limitations
+
+GhostClean is currently designed as a development/local SaaS prototype.
+
+External providers may impose restrictions around OAuth testing users, provider verification, account deletion APIs, privacy-request handling, production OAuth publishing, and service-specific deletion mechanisms.
+
+Not every discovered service provides a public API for automatic account deletion. Where automation is not officially supported, GhostClean uses a controlled/manual workflow rather than bypassing provider restrictions.
+
+## Future Improvements
+
+- Production OAuth verification
+- More mailbox providers
+- Additional discovery sources
+- More service-specific deletion integrations
+- Deletion automation where officially supported
+- Request status polling
+- Improved discovery confidence scoring
+- Service-specific deletion instructions
+- User activity dashboard
+- Privacy reports
+- Production cloud deployment
+- Improved observability and metrics
+
+## Documentation
+
+Additional documentation:
+
+```text
+docs/
+```
+
+Architecture decisions:
+
+```text
+ARCHITECTURE_DECISIONS.md
+```
+
+## Contributing
+
+```bash
+git clone <repository-url>
+cd GhostClean
+git checkout -b feature/your-feature
+
+# Make changes
+
+mvn test
+npm test
+
+git add .
+git commit -m "Add your feature"
+git push origin feature/your-feature
+```
+
+Then open a Pull Request.
+
+## Disclaimer
+
+GhostClean is a privacy-management and account-discovery project.
+
+The application should only access accounts for which the user has authorization.
+
+Deletion requests should only be submitted when the user intentionally wants the corresponding account or data removed.
+
+Third-party services may have their own terms, APIs, authorization requirements, and deletion procedures.
+
+GhostClean does not attempt to bypass provider security controls or unauthorized access restrictions.
+
+## Author
+
+**Debashis Behera**
+
+Java | Spring Boot | React | Full-Stack Development
+
+## Project
+
+If you find GhostClean interesting, consider starring the repository and following the project as it evolves.
+
+Built with:
+
+**Java · Spring Boot · React · PostgreSQL · Redis · Docker · OAuth 2.0**
